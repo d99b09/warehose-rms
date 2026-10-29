@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Warehouse RMS2</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script type="module" src="/assets/main.js"></script>
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="brand-mark">W</span><div><strong>WAREHOUSE</strong><span class="subtitle">Fleet Operations / RMS</span></div></div>
+    <div id="connection" class="connection" role="status" aria-live="polite">Подключение…</div>
+  </header>
+  <main class="overview">
+    <section class="map-panel">
+    <div class="map-heading">
+      <span class="eyebrow">КАРТА В РЕАЛЬНОМ ВРЕМЕНИ</span>
+      <h1 id="map-title">Загрузка карты…</h1>
+    </div>
+    <div id="navigation-state" class="navigation-state" data-stale="true" role="status" aria-live="polite">
+      <span id="motion-state">Выберите робота</span>
+      <span class="node-state current">Текущий: <strong id="current-node">—</strong></span>
+      <span class="node-state next">Следующий: <strong id="next-node">—</strong></span>
+    </div>
+    <div class="viewport"><canvas id="map" aria-label="Карта склада"></canvas></div>
+    <div class="map-legend" aria-label="Обозначения на карте">
+      <span class="node-state current">Текущий узел</span>
+      <span class="node-state next">Следующий узел и направление движения</span>
+      <span>Подсветка для выбранного робота</span>
+    </div>
+    </section>
+    <aside aria-label="Роботы и телеметрия">
+      <div class="section-heading"><h2>Роботы</h2><span id="robot-count" class="count">0</span></div>
+      <button id="add-robot" type="button" disabled>Добавить робота</button>
+      <dialog id="spawn-dialog" aria-labelledby="spawn-title">
+        <h2 id="spawn-title">Добавить робота</h2>
+        <form id="spawn-form">
+          <label>Парковка<select id="spawn-parking" required></select></label>
+          <button id="spawn-confirm" type="submit">Подтвердить создание</button>
+          <button id="spawn-close" type="button">Закрыть</button>
+          <p id="spawn-result" role="status" aria-live="polite"></p>
+        </form>
+      </dialog>
+      <div class="aside-content">
+        <p id="empty-state" class="muted">На складе пока нет роботов</p>
+        <div id="robot-list"></div>
+        <section class="telemetry">
+          <span class="eyebrow">ВЫБРАННЫЙ РОБОТ</span>
+          <h2 id="selected-title">Выберите робота</h2>
+          <dl id="details"></dl>
+        </section>
+      </div>
+    </aside>
+    <section class="operations">
+      <section class="control-card" aria-label="Ручное управление">
+        <span class="eyebrow">MANUAL CONTROL</span>
+        <h2>Ручное управление</h2>
+        <p id="manual-state" role="status">Выберите робота</p>
+        <button id="manual-start" type="button" disabled>Включить MANUAL</button>
+        <button id="manual-stop" type="button" disabled>Выйти из MANUAL</button>
+        <div class="direction-pad" aria-label="Удерживайте кнопку для движения">
+          <button data-motion="0.2,0" aria-label="Вперёд" disabled>↑ W</button>
+          <button data-motion="0,0.6" aria-label="Поворот влево" disabled>← A</button>
+          <button id="manual-zero" class="danger" type="button" disabled>STOP</button>
+          <button data-motion="0,-0.6" aria-label="Поворот вправо" disabled>D →</button>
+          <button data-motion="-0.2,0" aria-label="Назад" disabled>↓ S</button>
+        </div>
+        <p class="muted">Удерживайте W/A/S/D или стрелки. Пробел / Esc — STOP.</p>
+      </section>
+      <section class="control-card" aria-label="Построение пути">
+        <span class="eyebrow">ORDER MANAGER</span>
+        <h2>Выдать приказ</h2>
+        <form id="order-form">
+          <label>Робот<select id="order-robot" required></select></label>
+          <label>Целевой узел<select id="order-target" required></select></label>
+          <label>Тип<select id="order-type"><option value="MOVE">MOVE</option><option value="PARK">PARK</option></select></label>
+          <button id="order-submit" type="submit" disabled>Отправить приказ</button>
+          <p id="order-result" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+      <section class="control-card" aria-label="Тёмный цех">
+        <span class="eyebrow">DARK FACTORY</span>
+        <h2>Тёмный цех</h2>
+        <p id="dark-state" role="status" aria-live="polite">Выключен</p>
+        <form id="dark-form">
+          <label>Интервал, с<input id="dark-interval" type="number" min="0.2" max="3600" step="0.1" value="2" required></label>
+          <label>Минимальный путь, м<input id="dark-distance" type="number" min="0.1" max="100000" step="0.1" value="4" required></label>
+          <label>Random seed<input id="dark-seed" type="number" min="0" max="2147483647" step="1" value="42" required></label>
+          <label>Лимит роботов<input id="dark-limit" type="number" min="1" step="1" value="1" required></label>
+          <button type="submit">Включить / применить настройки</button>
+          <button id="dark-stop" type="button">Выключить генерацию</button>
+        </form>
+        <p class="muted">Генерация работает, пока открыта эта страница. Выключение не отменяет отправленные приказы.</p>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

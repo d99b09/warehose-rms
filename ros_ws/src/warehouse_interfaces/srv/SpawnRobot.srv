@@ -1,0 +1,12 @@
+# Stable operation_id is required for safe retry after a timeout. Query never creates.
+string operation_id
+string parking_node_id
+bool query
+---
+bool accepted
+int32 http_status
+string operation_id
+string robot_id
+string parking_node_id
+string status
+string message

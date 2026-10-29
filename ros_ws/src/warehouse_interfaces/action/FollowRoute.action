@@ -1,0 +1,13 @@
+string order_id
+string[] node_ids
+---
+bool success
+string error_code
+string message
+string final_node_id
+---
+string current_node_id
+uint32 completed_nodes
+uint32 total_nodes
+float32 distance_to_next_node
+string state

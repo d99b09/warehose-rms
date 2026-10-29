@@ -1,0 +1,12 @@
+build-essential
+git
+python3-venv
+python3-colcon-common-extensions
+python3-networkx
+python3-jsonschema
+nodejs
+npm
+mosquitto
+mosquitto-clients
+ros-jazzy-ros-base
+ros-jazzy-rviz2

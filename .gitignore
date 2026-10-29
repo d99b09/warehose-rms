@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+ros_ws/build/
+ros_ws/install/
+ros_ws/log/
+*.log
+
+warehouse_web/frontend/node_modules/
+warehouse_web/frontend/dist/
+warehouse_web/frontend/test-results/
+
+# colcon invoked from repository root
+log/

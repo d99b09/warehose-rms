@@ -1,0 +1,23 @@
+vda5050:
+  version: 2.1.0
+  interface_name: uagv
+  manufacturer: WarehouseSim
+mqtt:
+  host: 127.0.0.1
+  port: 1883
+  keepalive: 30
+  local_test: true
+robots: []
+state_directory: ~/.local/state/warehouse-rms2/vda5050
+simulation:
+  map_id: warehouse/L1
+  state_interval: 0.5
+  state_timeout: 2.0
+  command_max_age: 5.0
+  battery_charge: 100.0
+  speed_max: 0.5
+  acceleration_max: 1000.0
+  deceleration_max: 1000.0
+  length: 0.6
+  width: 0.4
+  height: 0.3

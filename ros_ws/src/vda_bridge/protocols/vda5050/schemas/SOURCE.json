@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/VDA5050/VDA5050",
+  "tag": "2.1.0",
+  "commit": "511d01d71587e8a3dc5e71d4f41dc52466f4284c",
+  "sha256": {
+    "connection.schema": "aa991bc8c5a15115a3cb46cbbc2a87bef208cef436268a06feed663a949c30f1",
+    "factsheet.schema": "386e3f20be0fa29132e8b3bc1e90991e7e5cf496aae7f3fb744cb072174a8bfc",
+    "instantActions.schema": "79b9d71ce31f5bce167d470e0e12a83c28f28f20580148b4dae28cedeb78a355",
+    "order.schema": "18fedf85ecf7bc22baf7da71b74d08d699d65b8c6a5f0ccde8bc8d84e1406796",
+    "state.schema": "26e41279414d7acfeac6ea9b6438b484b0930ee0e9059cf953168d141da8473b",
+    "visualization.schema": "9930b0fca1743ab2e4b9e2a66dad0f366bd4d8b18550f896adce34db3357ebff"
+  }
+}

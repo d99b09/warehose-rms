@@ -1,0 +1,10 @@
+string robot_id
+string target_node_id
+string order_type
+string order_id
+---
+bool accepted
+int32 http_status
+string message
+string order_id
+string[] route

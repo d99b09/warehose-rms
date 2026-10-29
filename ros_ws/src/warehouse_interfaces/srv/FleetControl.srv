@@ -1,0 +1,11 @@
+# Fixed command allowlist: STOP, STOP_ALL, MANUAL_START, MANUAL_CMD, MANUAL_STOP, RESUME
+string command
+string robot_id
+string session_id
+uint64 sequence
+float64 linear
+float64 angular
+float64 expires_at
+---
+bool accepted
+string message
