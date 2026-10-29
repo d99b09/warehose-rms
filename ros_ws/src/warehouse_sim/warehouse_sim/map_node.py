@@ -1,6 +1,7 @@
 """Publish the warehouse map as retained RViz markers."""
 
 import json
+import signal
 import subprocess
 import sys
 from math import atan2, cos, sin
@@ -11,6 +12,7 @@ import rclpy
 from rclpy.clock import Clock, ClockType
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.signals import SignalHandlerOptions
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
@@ -27,11 +29,20 @@ from .warehouse_map import WarehouseMap
 
 def main(args=None):
     """Load and publish the map, keeping it available to late subscribers."""
-    rclpy.init(args=args)
-    node = Node('warehouse_map')
+    shutdown_requested = False
+
+    def request_shutdown(signum, frame):
+        nonlocal shutdown_requested
+        shutdown_requested = True
+
+    signal.signal(signal.SIGINT, request_shutdown)
+    signal.signal(signal.SIGTERM, request_shutdown)
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
+    node = None
     agents = {}
     adapters = {}
     try:
+        node = Node('warehouse_map')
         share = Path(get_package_share_directory('warehouse_sim'))
         default = share / 'maps/nav/warehouse_normal/0.yaml'
         path = node.declare_parameter('map_path', str(default)).value
@@ -194,7 +205,8 @@ def main(args=None):
             MarkerArray, '/warehouse/map_markers',
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         publisher.publish(map_markers(warehouse))
-        rclpy.spin(node)
+        while rclpy.ok() and not shutdown_requested:
+            rclpy.spin_once(node, timeout_sec=0.1)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
@@ -207,5 +219,6 @@ def main(args=None):
             except subprocess.TimeoutExpired:
                 agent.kill()
                 agent.wait()
-        node.destroy_node()
+        if node is not None:
+            node.destroy_node()
         rclpy.try_shutdown()

@@ -247,10 +247,13 @@ class RobotAdapter(Node):
                 self.client.publish(self.rid, 'connection', self.factory.connection('ONLINE'))
                 self.client.publish(self.rid, 'factsheet', self.factory.factsheet(self.config['simulation']))
             elif kind == 'order':
+                self.get_logger().info(f'Robot {self.rid} received MQTT order: {json.dumps(message, ensure_ascii=False)}')
                 self._order(message)
             elif kind == 'instantActions':
+                self.get_logger().info(f'Robot {self.rid} received MQTT instantActions: {json.dumps(message, ensure_ascii=False)}')
                 self._instant(message)
             elif kind == 'validation_error':
+                self.get_logger().warning(f'Robot {self.rid} MQTT {message["topic"]}: {message["error"]}')
                 self._error('validationError', message['error'])
         if self.result_pending:
             success, message, at = self.result_pending
