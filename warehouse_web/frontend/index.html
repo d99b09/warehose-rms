@@ -28,6 +28,7 @@
       <span class="node-state current">Текущий узел</span>
       <span class="node-state next">Следующий узел и направление движения</span>
       <span>Подсветка для выбранного робота</span>
+      <span>Красный круг — узел робота без связи</span>
     </div>
     </section>
     <aside aria-label="Роботы и телеметрия">
@@ -48,6 +49,9 @@
         <section class="telemetry">
           <span class="eyebrow">ВЫБРАННЫЙ РОБОТ</span>
           <h2 id="selected-title">Выберите робота</h2>
+          <button id="robot-connection" type="button" disabled>Выключить робота</button>
+          <p class="muted">Симуляция потери связи. Робот завершит разрешённый переход и заблокирует узел.</p>
+          <p id="robot-connection-result" role="status" aria-live="polite"></p>
           <dl id="details"></dl>
         </section>
       </div>
@@ -91,7 +95,18 @@
           <button type="submit">Включить / применить настройки</button>
           <button id="dark-stop" type="button">Выключить генерацию</button>
         </form>
-        <p class="muted">Генерация работает, пока открыта эта страница. Выключение не отменяет отправленные приказы.</p>
+        <p class="muted">Генерация работает, пока открыта эта страница. После выключения роботы завершают ранее назначенные задания и служебные перемещения.</p>
+      </section>
+      <section class="control-card task-card" aria-labelledby="task-title">
+        <span class="eyebrow">TASK QUEUE</span>
+        <div class="section-heading">
+          <h2 id="task-title">Задачи роботов</h2>
+          <span id="task-count" class="count" aria-label="Количество задач">0</span>
+        </div>
+        <p class="muted">В порядке назначения. Выполненные задачи удаляются автоматически.</p>
+        <p id="task-state" class="muted" role="status" aria-live="polite">Ожидание данных диспетчера</p>
+        <p id="task-empty" class="muted" hidden>Нет назначенных задач</p>
+        <ol id="task-list" class="task-list" aria-label="Очередь задач в порядке назначения"></ol>
       </section>
     </section>
   </main>

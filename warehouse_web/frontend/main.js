@@ -2,6 +2,8 @@ import { fleetDetails, fleetRobot } from './fleet.js';
 import { setupDarkFactory, setupManual, setupOrder, setupSpawn } from './dashboard.js';
 import { StateConnection } from './socket.js';
 import { RobotMotion } from './motion.js';
+import { setupTaskQueue } from './task-queue.js';
+import { setupRobotConnection } from './robot-connection.js';
 
 const canvas = document.getElementById('map');
 const ctx = canvas.getContext('2d');
@@ -19,7 +21,9 @@ const motion = new RobotMotion();
 let animationFrame = null;
 const manual = setupManual(() => selected);
 const order = setupOrder(map, id => { selected = id; updatePanel(); render(); });
-setupDarkFactory(map, () => ({ snapshot, connected,
+const taskQueue = setupTaskQueue();
+const robotConnection = setupRobotConnection();
+const darkFactory = setupDarkFactory(map, () => ({ snapshot, connected,
   age: (performance.now() - receivedAt) / 1000 }));
 
 function stale(robot) {
@@ -88,8 +92,16 @@ function render() {
     line(toScreen(wall.start), toScreen(wall.end), '#34493d', 3);
   }
   ctx.font = '11px system-ui';
+  const blockedNodes = new Set(connected && !snapshot?.fleet?.stale ? snapshot?.fleet?.blocked_nodes ?? [] : []);
   for (const node of map.vertices) {
     const p = toScreen(node);
+    if (blockedNodes.has(node.id)) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 11, 0, Math.PI * 2);
+      ctx.strokeStyle = '#c64c4c';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
     ctx.fillStyle = parking.has(node.id) ? '#378158' : '#91a99a';
     if (parking.has(node.id)) {
       ctx.fillRect(p.x - 5, p.y - 5, 10, 10);
@@ -148,7 +160,7 @@ function render() {
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(-pose.theta);
-    ctx.fillStyle = stale(robot) ? '#969da3' :
+    ctx.fillStyle = stale(robot) || fleetRobot(snapshot, robot.robot_id)?.mqtt_connected === false ? '#969da3' :
       !robot.status_stale && ['COLLISION', 'OUT_OF_BOUNDS'].includes(robot.status) ? '#c64c4c' : '#399a69';
     ctx.fillRect(-length / 2, -bodyWidth / 2, length, bodyWidth);
     if (selected === robot.robot_id) {
@@ -179,7 +191,10 @@ function updatePanel() {
   }
   if (!ids.has(selected)) selected = robots[0]?.robot_id ?? null;
   manual.update();
+  robotConnection.update(snapshot, selected, connected, (performance.now() - receivedAt) / 1000);
   order.update(robots, selected);
+  taskQueue.update(snapshot, connected, (performance.now() - receivedAt) / 1000);
+  darkFactory.update();
   const list = document.getElementById('robot-list');
   for (const robot of robots) {
     let button = robotButtons.get(robot.robot_id);

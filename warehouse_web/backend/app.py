@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from warehouse_sim.warehouse_map import WarehouseMap
 
 from .config import ROOT, WebConfig
-from .models import ManualCommand, MapState, OrderRequest, SpawnRequest
+from .models import ConnectionRequest, ManualCommand, MapState, OrderRequest, SpawnRequest
 from .ros_bridge import RosBridge
 from .state_store import StateStore
 
@@ -68,6 +68,10 @@ def create_app(config: WebConfig | None = None, *,
             raise HTTPException(409, str(error)) from error
         except (ConnectionError, TimeoutError) as error:
             raise HTTPException(503, str(error)) from error
+
+    @app.post('/api/robots/{robot_id}/connection')
+    async def robot_connection(robot_id: str, body: ConnectionRequest):
+        return await manual_call(bridge.robot_connection, robot_id, body.enabled)
 
     @app.post('/api/robots/{robot_id}/manual/start', status_code=202)
     async def manual_start(robot_id: str):

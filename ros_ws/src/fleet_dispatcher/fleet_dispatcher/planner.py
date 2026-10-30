@@ -16,13 +16,17 @@ class PathPlanner:
                 graph.add_edge(edge.target, edge.source, length=length)
         self.graph = nx.freeze(graph)
 
-    def find_path(self, start, target):
+    def find_path(self, start, target, blocked_nodes=()):
         if start not in self.graph or target not in self.graph:
             raise ValueError('Неизвестный узел карты')
+        blocked = frozenset(blocked_nodes)
+        if start in blocked or target in blocked:
+            raise ValueError('Узел заблокирован роботом без связи')
+        graph = nx.subgraph_view(self.graph, filter_node=lambda n: n not in blocked)
         def heuristic(a, b):
             p, q = self.map.nodes[a], self.map.nodes[b]
             return hypot(q.x - p.x, q.y - p.y)
         try:
-            return nx.astar_path(self.graph, start, target, heuristic=heuristic, weight='length')
+            return nx.astar_path(graph, start, target, heuristic=heuristic, weight='length')
         except nx.NetworkXNoPath as error:
             raise ValueError('Маршрут до целевого узла не найден') from error

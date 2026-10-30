@@ -87,6 +87,10 @@ class ManualCommand(Model):
     angular: FiniteFloat = Field(ge=-0.6, le=0.6)
 
 
+class ConnectionRequest(Model):
+    enabled: bool = Field(strict=True)
+
+
 class RobotState(Model):
     robot_id: str
     length: FiniteFloat = Field(gt=0)
@@ -115,6 +119,7 @@ class RobotState(Model):
 
 class QueuedOrder(Model):
     order_id: str
+    number: int = Field(gt=0)
     target_node_id: str
     order_type: str
     status: str
@@ -138,6 +143,7 @@ class FleetRobot(Model):
 class FleetState(Model):
     mqtt_connected: bool
     robots: tuple[FleetRobot, ...]
+    blocked_nodes: tuple[str, ...] = ()
     stale: bool = False
 
 

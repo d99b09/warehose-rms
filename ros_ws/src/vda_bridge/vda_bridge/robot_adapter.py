@@ -46,11 +46,8 @@ class RobotAdapter(Node):
             if self.buffer.active:
                 self.buffer.failed = True
                 self._error('adapterRestart', 'Adapter restarted; cancel old execution before a new order', fatal=True)
-        self.client = MqttClient(self.config['mqtt'] | {'command_max_age': self.config['simulation']['command_max_age']},
-            {self.rid: self.factory.identity}, 'robot-'+self.rid,
-            will=(self.factory.identity, self.factory.connection('CONNECTIONBROKEN')))
-        for kind in ('order', 'instantActions'):
-            self.client.subscribe(self.rid, kind)
+        self.connection_enabled = True
+        self.client = self._new_client()
         self.telemetry = {}
         self.odom_at = self.agent_at = float('-inf')
         self.odom_sequence = self.agent_sequence = -1
@@ -65,12 +62,37 @@ class RobotAdapter(Node):
         self.last_state = float('-inf')
         self.action_client = ActionClient(self, FollowRoute, 'follow_route')
         self.wait_client = self.create_client(SetBool, 'set_traffic_wait')
+        self.create_service(SetBool, 'set_connection_enabled', self._set_connection_enabled)
         self.create_subscription(Odometry, 'odom', self._odom,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
         self.create_subscription(RobotState, 'agent_state', self._agent,
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_timer(.05, self._tick)
         self.client.start()
+
+    def _new_client(self):
+        client = MqttClient(self.config['mqtt'] | {'command_max_age': self.config['simulation']['command_max_age']},
+            {self.rid: self.factory.identity}, 'robot-'+self.rid,
+            will=(self.factory.identity, self.factory.connection('CONNECTIONBROKEN')))
+        for kind in ('order', 'instantActions'):
+            client.subscribe(self.rid, kind)
+        return client
+
+    def _set_connection_enabled(self, request, response):
+        if request.data != self.connection_enabled:
+            if request.data:
+                self.client = self._new_client()
+                self.client.start()
+                self.last_state = float('-inf')
+            else:
+                # Leave the ROS agent alive to finish its one released edge.
+                # No queued MQTT commands may be consumed after this point.
+                self.client.close((self.rid, self.factory.connection('CONNECTIONBROKEN')))
+            self.connection_enabled = request.data
+        response.success = True
+        response.message = ('Робот включён; восстановление MQTT-связи' if request.data else
+                            'Робот выключен; симуляция потери связи')
+        return response
 
     def _save(self):
         with self.journal.db:
@@ -243,11 +265,13 @@ class RobotAdapter(Node):
 
     def _tick(self):
         for kind, rid, message in self.client.drain():
+            if not self.connection_enabled:
+                continue
             if kind == 'connected':
                 self.client.publish(self.rid, 'connection', self.factory.connection('ONLINE'))
                 self.client.publish(self.rid, 'factsheet', self.factory.factsheet(self.config['simulation']))
             elif kind == 'order':
-                self.get_logger().info(f'Robot {self.rid} received MQTT order: {json.dumps(message, ensure_ascii=False)}')
+                # self.get_logger().info(f'Robot {self.rid} received MQTT order: {json.dumps(message, ensure_ascii=False)}')
                 self._order(message)
             elif kind == 'instantActions':
                 self.get_logger().info(f'Robot {self.rid} received MQTT instantActions: {json.dumps(message, ensure_ascii=False)}')
@@ -275,7 +299,7 @@ class RobotAdapter(Node):
             self._action_done(self.cancel_action, True)
             self.cancel_action = None
         step = self.buffer.next_step()
-        if step and not self.cancel_action and self.client.connected and self._stopped() and self.action_client.server_is_ready():
+        if step and not self.cancel_action and self.connection_enabled and self.client.connected and self._stopped() and self.action_client.server_is_ready():
             if step[0] != self._node():
                 self.buffer.failed = True
                 self._error('positionError', 'Robot is not at released edge start', fatal=True)
@@ -283,14 +307,15 @@ class RobotAdapter(Node):
                 self._send_step(step)
         self._wait_status(self.buffer.waiting)
         now = time.monotonic()
-        if self.client.connected and self._fresh() and now-self.last_state >= self.config['simulation']['state_interval']:
+        if self.connection_enabled and self.client.connected and self._fresh() and now-self.last_state >= self.config['simulation']['state_interval']:
             self.last_state = now
             state = state_from_buffer(self.factory, self.buffer, self.telemetry, self.config['simulation'],
                                       self.actions.values(), self.errors)
             self.client.publish(self.rid, 'state', state)
 
     def destroy_node(self):
-        self.client.close((self.rid, self.factory.connection('OFFLINE')))
+        if self.connection_enabled:
+            self.client.close((self.rid, self.factory.connection('OFFLINE')))
         self.journal.close()
         self.action_client.destroy()
         return super().destroy_node()

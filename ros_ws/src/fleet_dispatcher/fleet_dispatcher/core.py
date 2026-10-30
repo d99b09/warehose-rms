@@ -1,15 +1,16 @@
 """Single-owner fleet scheduler; transport and time are injected for testing."""
 from collections import deque
 from dataclasses import dataclass, field
+from functools import cache
 from math import hypot, isfinite
 import time
 from uuid import uuid4
 
-import networkx as nx
 from warehouse_sim.collision import segment_distance, point_segment_distance, CollisionChecker
 from warehouse_sim.kinematics import Pose
 from warehouse_sim.robot import Status
 from .planner import PathPlanner
+from .yield_planner import YieldPlanner
 
 
 @dataclass
@@ -34,9 +35,6 @@ class Execution:
     released: int = 0
     grant_at: float = 0.
     service: bool = False
-    beneficiary: str = ''
-    beneficiary_execution: str = ''
-    vacated_node: str = ''
     yield_forbidden_nodes: frozenset = field(default_factory=frozenset)
 
 
@@ -65,7 +63,8 @@ class Robot:
     blockers: set = field(default_factory=set)
     cancellation: tuple | None = None
     yield_plan: tuple | None = None
-    hold: tuple | None = None
+    clearance_for: tuple | None = None
+    clearance_paths: list = field(default_factory=list)
     fault: str = ''
     manual_seen: bool = False
 
@@ -79,6 +78,8 @@ class FleetCore:
         self.serial = 0
         self.connected = False
         self.checker = CollisionChecker(warehouse)
+        self.traversable = cache(self.traversable)
+        self.yield_planner = YieldPlanner(self)
 
     def register(self, rid, length=.6, width=.4):
         if rid not in self.robots:
@@ -129,6 +130,16 @@ class FleetCore:
         return (self.connected and r.online and self.clock()-r.state_at < self.timeout
                 and self.clock()-r.odom_at < self.timeout and self.clock()-r.agent_at < self.timeout)
 
+    def unavailable_nodes(self, rid=None):
+        """Keep the last position and any unconfirmed transition out of routing."""
+        nodes = set()
+        for other in self.robots.values():
+            if other.robot_id != rid and (not self.fresh(other) or not other.synchronized):
+                nodes.add(self.position_node(other))
+                nodes.update(other.reserved or ())
+        nodes.discard('')
+        return frozenset(nodes)
+
     def submit(self, rid, target, kind='MOVE', order_id=''):
         if order_id in self.orders:
             old = self.orders[order_id]
@@ -140,12 +151,14 @@ class FleetCore:
         if target not in self.map.nodes or kind not in {'MOVE', 'PARK'} or (kind == 'PARK' and target not in self.map.parking_nodes):
             return False, 400, 'Недопустимый узел или тип задания', None
         r = self.robots[rid]
+        if not self.connected or not r.online:
+            return False, 409, 'Нет связи с роботом: построение маршрута невозможно', None
         if len(r.queue) >= 16 or sum(len(x.queue) for x in self.robots.values()) >= 512:
             return False, 409, 'Очередь заданий заполнена', None
         start = self.orders[r.queue[-1]].target if r.queue else self.position_node(r)
         if start:
             try:
-                self.planner.find_path(start, target)
+                self.planner.find_path(start, target, self.unavailable_nodes(rid))
             except ValueError as error:
                 return False, 409, str(error), None
         self.serial += 1
@@ -162,20 +175,39 @@ class FleetCore:
         p, q = self._point(a), self._point(b)
         return any(point_segment_distance(self._point(node), p, q) <= 1e-9 for node in nodes)
 
-    def _segments(self, r):
+    def _yield_claims(self, r):
+        e = r.execution
+        route = r.yield_plan[0] if r.yield_plan else []
+        if not route and e:
+            route = e.route[e.completed:]
+            if not e.service:
+                goal = r.clearance_paths[0][1][-1] if r.clearance_paths else None
+                route = route[:route.index(goal)+1] if goal in route else []
+        return [(r.robot_id, route)] + r.clearance_paths[1:] if route else []
+
+    def _segments(self, r, poses=None):
         segments = []
-        if r.pose is not None:
-            segments.append((r.pose, r.pose))
+        pose = r.pose if poses is None else poses[r.robot_id]
+        if pose is not None:
+            segments.append((pose, pose))
         if r.reserved:
             segments.append(tuple(self._point(n) for n in r.reserved))
         return segments
 
-    def blockers(self, rid, a, b):
+    def blockers(self, rid, a, b, poses=None, intentions=False):
         r = self.robots[rid]
         p, q = self._point(a), self._point(b)
-        return {other.robot_id for other in self.robots.values() if other.robot_id != rid
-                and any(segment_distance(p, q, u, v) <= r.radius+other.radius+2*self.tolerance
-                        for u, v in self._segments(other))}
+        return {other.robot_id for other in self.robots.values() if other.robot_id != rid and
+                (any(segment_distance(p, q, u, v) <= r.radius+other.radius+2*self.tolerance
+                     for u, v in self._segments(other, poses)) or
+                 intentions and any(self.conflicts(rid, a, b, owner, path)
+                                    for owner, path in self._yield_claims(other)))}
+
+    def conflicts(self, rid, a, b, other_id, route):
+        return any(segment_distance(self._point(a), self._point(b),
+                   self._point(u), self._point(v)) <=
+                   self.robots[rid].radius + self.robots[other_id].radius + 2*self.tolerance
+                   for u, v in zip(route, route[1:] or route))
 
     def traversable(self, rid, a, b):
         return self.checker.check_motion(Pose(*self._point(a), 0), Pose(*self._point(b), 0),
@@ -212,10 +244,9 @@ class FleetCore:
                              e.released-offset)
 
     def _start(self, r, route, *, service=False, beneficiary=None, forbidden_nodes=()):
+        if beneficiary:
+            r.clearance_for = (beneficiary.robot_id, beneficiary.execution.execution_id)
         r.execution = Execution(list(route), service=service,
-                                beneficiary=beneficiary.robot_id if beneficiary else '',
-                                beneficiary_execution=beneficiary.execution.execution_id if beneficiary else '',
-                                vacated_node=route[0] if service else '',
                                 yield_forbidden_nodes=frozenset(forbidden_nodes))
         self._send(r, 0)
         r.status = 'YIELDING' if service else 'EXECUTING'
@@ -247,25 +278,31 @@ class FleetCore:
         r.execution = None
         r.fault = ''
         if reason == 'yield':
-            _, beneficiary_id, forbidden = r.yield_plan
+            planned_route, beneficiary_id, forbidden = r.yield_plan
             r.yield_plan = None
-            beneficiary = self.robots[beneficiary_id]
-            route = self._yield_path(r, beneficiary, forbidden_nodes=forbidden)
-            if route:
+            beneficiary = self.robots.get(beneficiary_id)
+            route = None
+            if (beneficiary and beneficiary.execution and
+                    r.clearance_for == (beneficiary_id, beneficiary.execution.execution_id)):
                 forbidden |= self._beneficiary_nodes(beneficiary)
+                if self._safe_retreat(r, planned_route, forbidden):
+                    route = planned_route
+            if route:
                 self._start(r, route, service=True, beneficiary=beneficiary,
                             forbidden_nodes=forbidden)
             else:
+                r.clearance_paths.clear()
                 r.status, r.message = 'WAITING', 'Нет доступного пути отъезда'
                 if r.queue:
                     self.orders[r.queue[0]].status = 'QUEUED'
         else:
+            r.clearance_paths.clear()
             r.synchronized = True
         return True
 
     def _synchronize(self, r):
         if not self.fresh(r):
-            r.status, r.message = 'UNCERTAIN', 'Нет актуального MQTT state или телеметрии'
+            r.status, r.message = 'UNCERTAIN', 'Нет актуального MQTT state или телеметрии; узел заблокирован'
             return False
         if r.manual_seen and r.agent_status != 'MANUAL' and self.stopped(r):
             r.manual_seen = False
@@ -312,28 +349,30 @@ class FleetCore:
                 and r.odom_at > e.grant_at):
             e.completed = index
             r.reserved = None
+        if (r.clearance_paths and not r.reserved and self.stopped(r) and
+                self.position_node(r) == r.clearance_paths[0][1][-1]):
+            r.clearance_paths.clear()
         if e.completed == len(e.route)-1 and not state['nodeStates'] and self.stopped(r):
-            if e.service:
-                r.hold = (e.beneficiary, e.beneficiary_execution, e.vacated_node)
-            elif r.queue:
+            if not e.service and r.queue:
                 order = self.orders[r.queue.popleft()]
                 order.status, order.message = 'COMPLETED', 'Задание выполнено'
             r.execution = None
             r.status, r.message = 'IDLE', ''
 
-    def _held(self, r):
-        if not r.hold:
-            return False
-        rid, eid, origin = r.hold
-        beneficiary = self.robots.get(rid)
-        e = beneficiary.execution if beneficiary else None
-        if e and e.execution_id == eid and origin in e.route[e.completed+1:]:
-            r.status, r.message = 'WAITING', 'Ожидание проезда приоритетного робота'
-            return True
-        if beneficiary and beneficiary.reserved and origin in beneficiary.reserved:
-            return True
-        r.hold = None
-        return False
+    def _beneficiary(self, r):
+        if r.clearance_for:
+            rid, eid = r.clearance_for
+            other = self.robots.get(rid)
+            if other and other.execution and other.execution.execution_id == eid:
+                return other
+            r.clearance_for = None
+
+    def _step(self, r):
+        e = r.execution
+        if (e and not r.fault and not r.cancellation and self.fresh(r) and self.stopped(r)
+                and e.confirmed_version == e.version and e.completed == e.released
+                and e.completed < len(e.route)-1 and not self.transport.uncertain(r.robot_id)):
+            return e.route[e.completed:e.completed+2]
 
     def tick(self):
         if not self.connected:
@@ -353,53 +392,52 @@ class FleetCore:
             for r in ready:
                 r.status, r.message = 'WAITING', 'Ручное управление или неизвестное положение робота'
             return
-        if any(not r.synchronized for r in self.robots.values()):
-            return
+        for r in sorted(ready, key=self._priority):
+            blocked = self.unavailable_nodes(r.robot_id)
+            e = r.execution
+            if (e and not r.cancellation and self._step(r) and
+                    blocked.intersection(e.route[e.completed:])):
+                # Cancel only at a confirmed node. Already released motion keeps
+                # its reservation until it has finished and been acknowledged.
+                self._cancel(r, 'replan')
+                r.status, r.message = 'WAITING', 'Перестроение маршрута: узел заблокирован роботом без связи'
+                continue
+            if not r.execution and r.queue and not r.fault and self.stopped(r):
+                order = self.orders[r.queue[0]]
+                try:
+                    self._start(r, self.planner.find_path(self.position_node(r), order.target, blocked))
+                except ValueError as error:
+                    if blocked:
+                        order.status, order.message = 'WAITING', str(error)
+                        r.status, r.message = 'WAITING', 'Нет маршрута в обход узлов роботов без связи'
+                    else:
+                        order.status, order.message = 'FAILED', str(error)
+                        r.queue.popleft()
+        failures = self._resolve(ready)
         for r in sorted(ready, key=self._priority):
             if r.fault or r.agent_status in {'ERROR', 'MANUAL'}:
                 r.status, r.message = 'UNCERTAIN', r.fault or 'Ошибка или ручное управление агента'
                 continue
-            if self._held(r):
+            if r.cancellation:
                 continue
             e = r.execution
-            if not e and r.queue and self.stopped(r):
-                order = self.orders[r.queue[0]]
-                try:
-                    route = self.planner.find_path(self.position_node(r), order.target)
-                except ValueError as error:
-                    order.status, order.message = 'FAILED', str(error)
-                    r.queue.popleft()
-                    continue
-                self._start(r, route)
-                continue
             if not e:
-                r.status, r.message = 'IDLE', ''
+                if not r.queue:
+                    r.status, r.message = 'IDLE', ''
                 continue
             if self.transport.uncertain(r.robot_id):
                 r.status, r.message = 'UNCERTAIN', 'Нет подтверждения команды VDA'
                 continue
-            if e.confirmed_version != e.version:
-                continue
             if e.completed < e.released:
                 r.status = 'YIELDING' if e.service else 'MOVING'
                 continue
-            if e.completed == len(e.route)-1 or not self.stopped(r):
+            step = self._step(r)
+            if not step:
                 continue
-            a, b = e.route[e.completed:e.completed+2]
-            r.blockers = self.blockers(r.robot_id, a, b)
-            if e.service:
-                beneficiary = self.robots.get(e.beneficiary)
-                forbidden = e.yield_forbidden_nodes | (
-                    self._beneficiary_nodes(beneficiary) if beneficiary else frozenset())
-                if self._crosses_nodes(a, b, forbidden):
-                    r.status, r.message = 'WAITING', 'Узел робота, которому уступают, недоступен'
-                    if beneficiary:
-                        r.blockers.add(beneficiary.robot_id)
-                    continue
-            if r.blockers or not self.traversable(r.robot_id, a, b):
-                r.status = 'WAITING'
-                r.message = ('Путь занят: '+', '.join(sorted(r.blockers)) if r.blockers
-                             else 'Переход не обеспечивает допустимый просвет')
+            a, b = step
+            reason = self._blocked(r, a, b)
+            if reason:
+                r.status, r.message = 'WAITING', reason + failures.get(r.robot_id, '')
                 continue
             r.reserved = (a, b)
             previous = e.released
@@ -408,10 +446,12 @@ class FleetCore:
             e.grant_at = self.clock()
             self._send(r, previous)
             r.status, r.message = ('YIELDING' if e.service else 'MOVING'), ''
-        self._resolve(ready)
 
     def _priority(self, r):
-        return (self.orders[r.queue[0]].number if r.queue else float('inf'), r.robot_id)
+        service = bool(self._yield_claims(r))
+        owner = self._beneficiary(r) if service else None
+        queue = owner.queue if owner else r.queue
+        return (self.orders[queue[0]].number if queue else float('inf'), not service, r.robot_id)
 
     def _beneficiary_nodes(self, beneficiary):
         nodes = {self.position_node(beneficiary)}
@@ -420,83 +460,112 @@ class FleetCore:
         nodes.discard('')
         return frozenset(nodes)
 
-    def _yield_path(self, displaced, beneficiary, *, forbidden_nodes=()):
-        start = self.position_node(displaced)
-        e = beneficiary.execution
-        if not start or not e or displaced.reserved or not self.stopped(displaced):
-            return None
-        forbidden = frozenset(forbidden_nodes) | self._beneficiary_nodes(beneficiary)
-        if start in forbidden:
-            return None
-        protected = e.route[e.completed:]
-        segments = [(self._point(a), self._point(b)) for a, b in zip(protected, protected[1:])]
-        segments += [(self._point(n), self._point(n)) for n in protected]
-        view = nx.subgraph_view(self.planner.graph,
-                               filter_node=lambda node: node not in forbidden,
-                               filter_edge=lambda a, b:
-                               not self._crosses_nodes(a, b, forbidden) and
-                               not self.blockers(displaced.robot_id, a, b) and
-                               self.traversable(displaced.robot_id, a, b))
-        distances, paths = nx.single_source_dijkstra(view, start, weight='length')
-        for node in sorted(distances, key=lambda n: (distances[n], n)):
-            if node == start or node in protected:
-                continue
-            p = self._point(node)
-            if any(segment_distance(p, p, a, b) <= displaced.radius+beneficiary.radius+2*self.tolerance
-                   for a, b in segments):
-                continue
-            return paths[node]
-        return None
+    def _safe_retreat(self, r, route, forbidden):
+        return (self.stopped(r) and self.position_node(r) == route[0] and
+                all(not self._crosses_nodes(a, b, forbidden) and
+                    not self.blockers(r.robot_id, a, b) and self.traversable(r.robot_id, a, b)
+                    for a, b in zip(route, route[1:])))
 
-    def _yield(self, r, beneficiary, route):
-        forbidden = self._beneficiary_nodes(beneficiary)
+    def _yield(self, r, beneficiary, route, *, forbidden_nodes=(), paths=()):
+        forbidden = self._beneficiary_nodes(beneficiary) | frozenset(forbidden_nodes)
+        r.clearance_for = (beneficiary.robot_id, beneficiary.execution.execution_id)
+        r.clearance_paths = list(paths)
+        if r.queue:
+            self.orders[r.queue[0]].status = 'SUSPENDED'
         if r.execution:
             r.yield_plan = (route, beneficiary.robot_id, forbidden)
             self._cancel(r, 'yield')
             r.message = 'Приостановка задания для освобождения пути'
-            if r.queue:
-                self.orders[r.queue[0]].status = 'SUSPENDED'
         else:
             self._start(r, route, service=True, beneficiary=beneficiary,
                         forbidden_nodes=forbidden)
 
+    def _can_displace(self, r, beneficiary):
+        e = r.execution
+        if (r is beneficiary or self._priority(r) <= self._priority(beneficiary) or
+                not self.fresh(r) or not r.synchronized or not self.stopped(r) or
+                r.fault or r.reserved or r.cancellation or self.transport.uncertain(r.robot_id)):
+            return False
+        if e and (self._yield_claims(r) or e.confirmed_version != e.version or e.completed != e.released):
+            return False
+        previous = self._beneficiary(r)
+        return (not previous or previous is beneficiary or
+                self._priority(previous) >= self._priority(beneficiary))
+
+    def _priority_conflict(self, r, a, b):
+        beneficiary = self._beneficiary(r)
+        if beneficiary and not self._yield_claims(r):
+            e = beneficiary.execution
+            if self.conflicts(r.robot_id, a, b, beneficiary.robot_id, e.route[e.completed:]):
+                return True
+        for other in self.robots.values():
+            if (other is not r and self._priority(other) < self._priority(r) and
+                    any(self.conflicts(r.robot_id, a, b, owner, path)
+                        for owner, path in self._yield_claims(other))):
+                return True
+        return False
+
+    def _blocked(self, r, a, b):
+        r.blockers = self.blockers(r.robot_id, a, b)
+        if r.execution.service:
+            other = self._beneficiary(r)
+            forbidden = r.execution.yield_forbidden_nodes | (
+                self._beneficiary_nodes(other) if other else frozenset())
+            if self._crosses_nodes(a, b, forbidden):
+                return 'Узел робота, которому уступают, недоступен'
+        if self._priority_conflict(r, a, b):
+            return 'Переход мешает освобождению приоритетного пути'
+        if r.blockers:
+            return 'Путь занят: '+', '.join(sorted(r.blockers))
+        if not self.traversable(r.robot_id, a, b):
+            return 'Переход не обеспечивает допустимый просвет'
+        if not r.execution.service:
+            ahead = r.execution.route[r.execution.completed+1:]
+            for other in self.robots.values():
+                if (other is not r and not other.reserved and self.position_node(other) in ahead and
+                        not self.yield_planner.plan(r, other, forbidden_nodes={b}, static=True)):
+                    return 'Переход перекрывает выезд роботу '+other.robot_id
+
+    def _departing(self, r, waiting):
+        step = self._step(r)
+        route = waiting.execution.route[waiting.execution.completed:]
+        return bool(step and not self._blocked(r, *step) and
+                    (r.robot_id in self.blockers(waiting.robot_id, *route[:2]) or
+                     not self.conflicts(waiting.robot_id, *route[:2], r.robot_id, step)))
+
     def _resolve(self, ready):
+        failures = {}
         for waiting in sorted(ready, key=self._priority):
-            if not waiting.execution or waiting.execution.service:
+            e = waiting.execution
+            if (not e or self._yield_claims(waiting) or waiting.cancellation or waiting.fault or
+                    waiting.reserved or not self.stopped(waiting)):
                 continue
-            # Vacate idle occupants before approaching a cul-de-sac exit.
-            # Only the next edge is reserved; this lookahead grants no movement.
-            route = waiting.execution.route[waiting.execution.completed:]
+            if any(self._beneficiary(r) is waiting and self._yield_claims(r)
+                   for r in self.robots.values()):
+                continue
+            route = e.route[e.completed:]
             occupants = set().union(*(self.blockers(waiting.robot_id, a, b)
                                      for a, b in zip(route, route[1:])))
-            for rid in sorted(occupants):
-                idle = self.robots[rid]
-                if idle.queue or idle.execution or idle.hold or idle.fault or not self.fresh(idle):
+            for rid in sorted(occupants, key=lambda rid: self._priority(self.robots[rid])):
+                displaced = self.robots[rid]
+                if self._departing(displaced, waiting):
                     continue
-                route = self._yield_path(idle, waiting)
-                if route:
-                    self._yield(idle, waiting, route)
-                elif rid in waiting.blockers:
-                    waiting.message += '; нет доступного пути отъезда'
-        graph = nx.DiGraph()
-        for r in ready:
-            graph.add_edges_from((r.robot_id, b) for b in r.blockers)
-        for component in nx.strongly_connected_components(graph):
-            if len(component) < 2:
-                continue
-            participants = sorted((self.robots[rid] for rid in component), key=self._priority)
-            beneficiary = participants[0]
-            for displaced in reversed(participants[1:]):
-                if (not displaced.execution or displaced.execution.service or displaced.cancellation
-                        or displaced.fault or not self.fresh(displaced)):
-                    continue
-                route = self._yield_path(displaced, beneficiary)
-                if route:
-                    self._yield(displaced, beneficiary, route)
+                plan = self.yield_planner.plan(waiting, displaced)
+                if plan:
+                    move = plan[0]
+                    leaf = self.robots[move.robot_id]
+                    paths = [(m.robot_id, m.route) for m in plan]
+                    own_route = leaf.execution.route[leaf.execution.completed:] if leaf.execution else []
+                    if self._departing(leaf, waiting) and own_route[:len(move.route)] == move.route:
+                        leaf.clearance_for = (waiting.robot_id, e.execution_id)
+                        leaf.clearance_paths = paths
+                    else:
+                        self._yield(leaf, waiting, move.route,
+                                    forbidden_nodes=move.forbidden_nodes, paths=paths)
                     break
-            else:
-                for r in participants:
-                    r.message = 'Взаимная блокировка: нет доступного пути отъезда'
+                failures[waiting.robot_id] = ('; поиск цепочки достиг лимита' if self.yield_planner.exhausted
+                                              else '; нет доступной цепочки отъезда')
+        return failures
 
     def snapshot(self):
         robots = []
@@ -511,6 +580,8 @@ class FleetCore:
                 remaining_route=e.route[e.completed:] if e else [],
                 yielding=bool(e and e.service), blocking_robots=sorted(r.blockers),
                 queue=[dict(order_id=oid, target_node_id=self.orders[oid].target,
-                            order_type=self.orders[oid].kind, status=self.orders[oid].status)
+                            order_type=self.orders[oid].kind, status=self.orders[oid].status,
+                            number=self.orders[oid].number)
                        for oid in r.queue]))
-        return dict(mqtt_connected=self.connected, robots=robots)
+        return dict(mqtt_connected=self.connected, robots=robots,
+                    blocked_nodes=sorted(self.unavailable_nodes()))

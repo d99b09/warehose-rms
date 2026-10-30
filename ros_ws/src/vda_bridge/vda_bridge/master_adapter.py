@@ -67,6 +67,8 @@ class MasterAdapter:
             r = self.core.robots[rid]
             if kind == 'connection':
                 r.online = message['connectionState'] == 'ONLINE'
+                if rid in self.pending:
+                    self.pending[rid]['started'] = None
                 if not r.online:
                     r.synchronized = False
                     r.state_at = float('-inf')
@@ -90,7 +92,7 @@ class MasterAdapter:
                         reconcile = True
                     if ack:
                         del self.pending[rid]
-                    elif p['started'] is None and reconcile:
+                    elif p['started'] is None and reconcile and r.online:
                         p['started'], p['last'] = self.clock(), float('-inf')
             elif kind == 'validation_error':
                 r.message = 'Ошибка MQTT: '+message['error']

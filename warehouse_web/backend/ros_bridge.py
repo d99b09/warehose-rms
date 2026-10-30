@@ -167,6 +167,38 @@ class RosBridge:
                 raise ConnectionError('Ошибка ответа диспетчера') from error
             return {key: getattr(reply, key) for key in reply.get_fields_and_field_types()}
 
+    def robot_connection(self, robot_id, enabled):
+        from std_srvs.srv import SetBool
+
+        with self.lock:
+            if not self.healthy:
+                raise ConnectionError('ROS недоступен')
+            if robot_id not in self.subscriptions:
+                raise ValueError('Неизвестный робот')
+            if self.manual_robot == robot_id:
+                raise ValueError('Сначала выйдите из ручного управления')
+            namespace = self.subscriptions[robot_id][0]
+            client = self.node.create_client(SetBool, namespace + '/set_connection_enabled')
+            try:
+                if not client.wait_for_service(timeout_sec=2.0):
+                    raise ConnectionError('Адаптер робота недоступен')
+                future = client.call_async(SetBool.Request(data=enabled))
+                done = threading.Event()
+                future.add_done_callback(lambda _: done.set())
+                if not done.wait(8.0):
+                    client.remove_pending_request(future)
+                    future.cancel()
+                    raise TimeoutError('Нет ответа от адаптера; проверьте состояние связи')
+                try:
+                    response = future.result()
+                except Exception as error:
+                    raise ConnectionError('Ошибка ответа адаптера робота') from error
+                if not response.success:
+                    raise ValueError(response.message)
+                return {'accepted': True, 'enabled': enabled, 'message': response.message}
+            finally:
+                self.node.destroy_client(client)
+
     def manual_mode(self, robot_id, enabled):
         from geometry_msgs.msg import Twist
         from std_srvs.srv import SetBool

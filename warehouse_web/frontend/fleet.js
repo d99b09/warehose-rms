@@ -8,6 +8,12 @@ export function fleetRobot(snapshot, id) {
   return snapshot?.fleet?.robots.find(robot => robot.robot_id === id);
 }
 
+export function fleetTasks(snapshot) {
+  return (snapshot?.fleet?.robots ?? []).flatMap(robot => robot.queue.map(order => ({
+    ...order, robot_id: robot.robot_id, status_label: labels[order.status] ?? order.status,
+  }))).sort((a, b) => a.number - b.number);
+}
+
 export function fleetDetails(snapshot, id, connected = true) {
   const robot = fleetRobot(snapshot, id);
   if (!robot) return [['Диспетчер', 'Нет данных']];

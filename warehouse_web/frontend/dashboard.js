@@ -207,8 +207,35 @@ export function setupDarkFactory(map, state) {
     edges.get(edge.source).push([edge.target, length]);
     if (edge.bidirectional) edges.get(edge.target).push([edge.source, length]);
   }
-  let timer = null, generation = 0, busy = false, random = 0, accepted = 0;
+  let timer = null, generation = 0, busy = false, running = false, random = 0, accepted = 0;
   const sent = new Map();
+
+  function refreshSent(fleet) {
+    for (const [id, sentAt] of sent) {
+      const item = fleet.find(robot => robot.robot_id === id);
+      if (!item || item.queue.length || item.order_id || item.status !== 'IDLE' || Date.now() - sentAt > 10000) sent.delete(id);
+    }
+  }
+
+  function update() {
+    if (running) return;
+    const prefix = `Выключен · принято ${accepted}`;
+    if (busy) {
+      status.textContent = `${prefix} · ожидание ответа на отправленный приказ`;
+      return;
+    }
+    const { snapshot, connected, age } = state();
+    if (!connected || !snapshot?.bridge_ok || !snapshot.fleet || snapshot.fleet.stale || age >= snapshot.stale_after) {
+      status.textContent = `${prefix} · ожидание актуальных данных диспетчера`;
+      return;
+    }
+    const fleet = snapshot.fleet.robots;
+    refreshSent(fleet);
+    const remaining = fleet.reduce((total, robot) => total + robot.queue.length, 0);
+    status.textContent = remaining ? `${prefix} · завершаются задания в парке: ${remaining}` :
+      fleet.some(robot => robot.order_id || robot.yielding || ['MOVING', 'YIELDING', 'EXECUTING'].includes(robot.status)) ?
+        `${prefix} · завершение служебных перемещений` : `${prefix} · назначенных заданий нет`;
+  }
 
   function candidates(start, distance) {
     const distances = new Map([[start, 0]]), visited = new Set();
@@ -234,10 +261,7 @@ export function setupDarkFactory(map, state) {
       return;
     }
     const fleet = snapshot.fleet.robots;
-    for (const [id, sentAt] of sent) {
-      const item = fleet.find(robot => robot.robot_id === id);
-      if (!item || item.queue.length || item.order_id || item.status !== 'IDLE' || Date.now() - sentAt > 10000) sent.delete(id);
-    }
+    refreshSent(fleet);
     const active = fleet.filter(robot => robot.queue.length || robot.order_id || robot.status !== 'IDLE').length + sent.size;
     if (active >= Number(limit.value)) { status.textContent = `Включён · принято ${accepted} · ожидание свободного робота`; return; }
     const available = snapshot.robots.filter(item => {
@@ -268,13 +292,17 @@ export function setupDarkFactory(map, state) {
       if (run === generation) status.textContent = `Включён · принято ${accepted} · ${robot.robot_id} → ${target}`;
     } catch (error) {
       if (run === generation) status.textContent = `Ошибка: ${error.message}`;
-    } finally { busy = false; }
+    } finally {
+      busy = false;
+      if (!running) update();
+    }
   }
 
   form.onsubmit = event => {
     event.preventDefault();
     clearInterval(timer);
     generation++;
+    running = true;
     random = Number(seed.value) >>> 0;
     accepted = 0;
     status.textContent = 'Включён · ожидание робота';
@@ -284,8 +312,10 @@ export function setupDarkFactory(map, state) {
   };
   stop.onclick = () => {
     generation++;
+    running = false;
     clearInterval(timer);
     timer = null;
-    status.textContent = `Выключен · принято ${accepted}`;
+    update();
   };
+  return { update };
 }
